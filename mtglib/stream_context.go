@@ -18,6 +18,7 @@ type streamContext struct {
 	streamID     string
 	dc           int
 	logger       Logger
+	secret       *Secret // matched secret for this connection
 }
 
 func (s *streamContext) Deadline() (time.Time, bool) {

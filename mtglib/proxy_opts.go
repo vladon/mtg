@@ -1,6 +1,9 @@
 package mtglib
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ProxyOpts is a structure with settings to mtg proxy.
 //
@@ -9,8 +12,14 @@ import "time"
 type ProxyOpts struct {
 	// Secret defines a secret which should be used by a proxy.
 	//
-	// This is a mandatory setting.
+	// This is a mandatory setting for backward compatibility.
+	// If Secrets is provided, this field is ignored.
 	Secret Secret
+
+	// Secrets defines multiple secrets which should be used by a proxy.
+	//
+	// This is an optional setting. If provided, takes precedence over Secret.
+	Secrets []Secret
 
 	// Network defines a network instance which should be used for all network
 	// communications made by proxies.
@@ -127,8 +136,21 @@ func (p ProxyOpts) valid() error {
 		return ErrEventStreamIsNotDefined
 	case p.Logger == nil:
 		return ErrLoggerIsNotDefined
-	case !p.Secret.Valid():
-		return ErrSecretInvalid
+	}
+
+	// Validate secrets - either single secret or multiple secrets
+	if len(p.Secrets) > 0 {
+		// Multiple secrets provided
+		for i, secret := range p.Secrets {
+			if !secret.Valid() {
+				return fmt.Errorf("invalid secret at index %d: %w", i, ErrSecretInvalid)
+			}
+		}
+	} else {
+		// Single secret or backward compatibility mode
+		if !p.Secret.Valid() {
+			return ErrSecretInvalid
+		}
 	}
 
 	return nil

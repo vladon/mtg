@@ -23,7 +23,8 @@ type ListConfig struct {
 type Config struct {
 	Debug                    TypeBool        `json:"debug"`
 	AllowFallbackOnUnknownDC TypeBool        `json:"allowFallbackOnUnknownDc"`
-	Secret                   mtglib.Secret   `json:"secret"`
+	Secret                   mtglib.Secret   `json:"secret"`        // Backward compatibility
+	Secrets                  []mtglib.Secret `json:"secrets"`      // Multiple secrets support
 	BindTo                   TypeHostPort    `json:"bindTo"`
 	PreferIP                 TypePreferIP    `json:"preferIp"`
 	DomainFrontingPort       TypePort        `json:"domainFrontingPort"`
@@ -67,8 +68,19 @@ type Config struct {
 }
 
 func (c *Config) Validate() error {
-	if !c.Secret.Valid() {
-		return fmt.Errorf("invalid secret %s", c.Secret.String())
+	// Validate secrets - either single secret or multiple secrets
+	if len(c.Secrets) > 0 {
+		// Multiple secrets provided
+		for i, secret := range c.Secrets {
+			if !secret.Valid() {
+				return fmt.Errorf("invalid secret at index %d: %s", i, secret.String())
+			}
+		}
+	} else {
+		// Single secret or backward compatibility mode
+		if !c.Secret.Valid() {
+			return fmt.Errorf("invalid secret %s", c.Secret.String())
+		}
 	}
 
 	if c.BindTo.Get("") == "" {
@@ -76,6 +88,15 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// GetSecrets returns the secrets to use, preferring multiple secrets if available
+func (c *Config) GetSecrets() []mtglib.Secret {
+	if len(c.Secrets) > 0 {
+		return c.Secrets
+	}
+	// Backward compatibility: return single secret as array
+	return []mtglib.Secret{c.Secret}
 }
 
 func (c *Config) String() string {

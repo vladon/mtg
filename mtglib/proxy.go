@@ -30,7 +30,7 @@ type Proxy struct {
 	workerPool               *ants.PoolWithFunc
 	telegram                 *telegram.Telegram
 
-	secret          Secret
+	secretManager    *SecretManager
 	network         Network
 	antiReplayCache AntiReplayCache
 	blocklist       IPBlocklist
@@ -41,7 +41,12 @@ type Proxy struct {
 
 // DomainFrontingAddress returns a host:port pair for a fronting domain.
 func (p *Proxy) DomainFrontingAddress() string {
-	return net.JoinHostPort(p.secret.Host, strconv.Itoa(p.domainFrontingPort))
+	if p.secretManager != nil {
+		if defaultSecret := p.secretManager.GetDefaultSecret(); defaultSecret != nil {
+			return net.JoinHostPort(defaultSecret.Host, strconv.Itoa(p.domainFrontingPort))
+		}
+	}
+	return ""
 }
 
 // ServeConn serves a connection. We do not check IP blocklist and concurrency
@@ -162,7 +167,19 @@ func (p *Proxy) doFakeTLSHandshake(ctx *streamContext) bool {
 		return false
 	}
 
-	hello, err := faketls.ParseClientHello(p.secret.Key[:], rec.Payload.Bytes())
+	// Try to find matching secret
+	matchedSecret, err := p.secretManager.FindSecret(rec.Payload.Bytes())
+	if err != nil {
+		p.logger.InfoError("cannot find matching secret", err)
+		p.doDomainFronting(ctx, rewind)
+
+		return false
+	}
+
+	// Store matched secret in context
+	ctx.secret = matchedSecret
+
+	hello, err := faketls.ParseClientHello(matchedSecret.Key[:], rec.Payload.Bytes())
 	if err != nil {
 		p.logger.InfoError("cannot parse client hello", err)
 		p.doDomainFronting(ctx, rewind)
@@ -170,7 +187,7 @@ func (p *Proxy) doFakeTLSHandshake(ctx *streamContext) bool {
 		return false
 	}
 
-	if err := hello.Valid(p.secret.Host, p.tolerateTimeSkewness); err != nil {
+	if err := hello.Valid(matchedSecret.Host, p.tolerateTimeSkewness); err != nil {
 		p.logger.
 			BindStr("hostname", hello.Host).
 			BindStr("hello-time", hello.Time.String()).
@@ -188,7 +205,7 @@ func (p *Proxy) doFakeTLSHandshake(ctx *streamContext) bool {
 		return false
 	}
 
-	if err := faketls.SendWelcomePacket(rewind, p.secret.Key[:], hello); err != nil {
+	if err := faketls.SendWelcomePacket(rewind, matchedSecret.Key[:], hello); err != nil {
 		p.logger.InfoError("cannot send welcome packet", err)
 
 		return false
@@ -202,7 +219,11 @@ func (p *Proxy) doFakeTLSHandshake(ctx *streamContext) bool {
 }
 
 func (p *Proxy) doObfuscated2Handshake(ctx *streamContext) error {
-	dc, encryptor, decryptor, err := obfuscated2.ClientHandshake(p.secret.Key[:], ctx.clientConn)
+	if ctx.secret == nil {
+		return errors.New("no secret available for obfuscated2 handshake")
+	}
+	
+	dc, encryptor, decryptor, err := obfuscated2.ClientHandshake(ctx.secret.Key[:], ctx.clientConn)
 	if err != nil {
 		return fmt.Errorf("cannot process client handshake: %w", err)
 	}
@@ -298,10 +319,20 @@ func NewProxy(opts ProxyOpts) (*Proxy, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Create secret manager based on provided secrets
+	var secretManager *SecretManager
+	if len(opts.Secrets) > 0 {
+		secretManager = NewSecretManager(opts.Secrets)
+	} else {
+		// Backward compatibility: single secret mode
+		secretManager = NewSecretManager([]Secret{opts.Secret})
+	}
+	
 	proxy := &Proxy{
 		ctx:                      ctx,
 		ctxCancel:                cancel,
-		secret:                   opts.Secret,
+		secretManager:              secretManager,
 		network:                  opts.Network,
 		antiReplayCache:          opts.AntiReplayCache,
 		blocklist:                opts.IPBlocklist,
